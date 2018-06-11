@@ -1,5 +1,7 @@
 import numpy as np
 import logging
+
+from ccg_nlpy.core import view
 from utils.data_utils import count_outlinks
 
 
@@ -11,7 +13,7 @@ class StarModel(object):
     
         self.m = 1
         self.k = 5
-        self.w_unary = np.array([0.5,0.5])
+        self.w_unary = np.array([-0.5,-0.5])
         self.w_pairwise = np.array([0.05,0.10,0.15,0.20,0.25,0.25])
         self.outlinks_map = None
 
@@ -25,43 +27,55 @@ class StarModel(object):
         @param: ta, the textannotation to which to add a view
     """
     def add_view(self,ta):
-        wiki_view = ta.get_view("CANDGEN")
-        wiki_labels_to_scores = wiki_view.get_labels_to_scores()
-        wiki_cons = wiki_view.get_cons()
+        logger.info("Adding coherence view to " + ta.id)
+        candgen_view = ta.get_view("CANDGEN")
+        candgen_labels_to_scores = candgen_view.get_labels_to_scores()
+        candgen_cons = candgen_view.get_cons()
         coh_cons = []
 
         # calculate attention score for each candidate for each mention
-        n = len(wiki_labels_to_scores)
+        n = len(candgen_labels_to_scores)
         indices = np.arange(n, -1, -1)
+        logger.info("Lengths of labelsToScores, constituents: " + str(n) + "," + str(len(candgen_cons)))
         for i in range(n):
             # mi is the current mention for which to perform coherence
-            mi = wiki_labels_to_scores[i]
+            mi = candgen_labels_to_scores[i]
+            if not mi:
+                coh_con = {"label":"NIL","score":1.0,\
+                    "start":candgen_cons[i]["start"],"end":candgen_cons[i]["end"]}
+                coh_cons.append(coh_con)
+                continue
             scores = np.zeros(len(mi))
 
             # get list of other mentions which are not mi
             other_indices = [j for j in range(n) if j!=i]
-            other_mentions = [wiki_labels_to_scores[idx] for idx in other_indices]
+            other_mentions = [candgen_labels_to_scores[idx] for idx in other_indices]
 
             # calculate coherence score for each candidate title
             idx = 0
-            print(mi)
             for k,v in mi.items():
                 scores[idx] = self.unary_score(v) + self.attention_score(k,other_mentions)
 
             # argmax over the attention scores for each candidate
             # to find the most coherence candidate
-            title = mi.keys()[np.argmax(scores)]  
+            title = list(mi.keys())[np.argmax(scores)]  
             # create new constituent for coherence view
             coh_con = {"label":title,"score":np.max(scores),\
-                "start":wiki_cons[i]["start"],"end":wiki_cons[i]["end"]}
+                "start":candgen_cons[i]["start"],"end":candgen_cons[i]["end"]}
             coh_cons.append(coh_con)
 
-        view = {}
-        view["viewType"] = "TokenLabelView"
-        view["viewName"] = "COHERENCE"
-        view["generator"] = "coherence-annotator"
-        view["score"] = 1.0
-        view["constituents"] = coh_con
+        coh_view_json = {}
+
+        coh_view_json["viewName"] = "COHERENCE"
+        coh_view_json["viewData"] = [{}]
+        coh_view_json["viewData"][0]["viewType"] = "TokenLabelView"
+        coh_view_json["viewData"][0]["viewName"] = "COHERENCE"
+        coh_view_json["viewData"][0]["generator"] = "coherence-annotator"
+        coh_view_json["viewData"][0]["score"] = 1.0
+        coh_view_json["viewData"][0]["constituents"] = coh_cons
+
+        coherence_view = view.View(coh_view_json,ta.get_tokens)
+        ta.view_dictionary["COHERENCE"] = coherence_view
 
     
     """
@@ -77,9 +91,11 @@ class StarModel(object):
         scores = np.zeros(len(other_mentions))
         idx = 0
         for mention in other_mentions:
-            scores[idx] = self.score_yi_mj(yi,mention)
+            if len(mention) > 0:
+                scores[idx] = self.score_yi_mj(yi,mention)
             idx+=1
-        return np.sum(scores[::-1].sort()[:self.k])
+        scores[::-1].sort()
+        return np.sum(scores[:self.k])
 
 
     """
@@ -96,8 +112,6 @@ class StarModel(object):
         for k,v in mj_cands.items():
             scores[idx] = self.unary_score(v) + self.pairwise_score(yi, k)
             idx+=1
-        print("scores")
-        print(scores)
         return np.max(scores)
 
     """
@@ -108,8 +122,10 @@ class StarModel(object):
         @return: the weighted unary score of the candidate
     """
     def unary_score(self, pi):
-        pi -= (.25*pi)
-        phi = np.array([np.log(pi),np.log(1-pi)])
+        if pi == 1:
+            phi = np.zeros(2)
+        else:
+            phi = np.array([np.log(pi),np.log(1-pi)])
         return np.dot(phi,self.w_unary)
 
     """
