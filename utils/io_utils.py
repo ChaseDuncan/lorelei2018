@@ -7,6 +7,8 @@ import os
 from os import listdir
 from os.path import isfile, join
 from sqlitedict import SqliteDict
+import tensorflow as tf
+import numpy as np
 
 from ccg_nlpy import core, local_pipeline, remote_pipeline
 
@@ -283,12 +285,64 @@ def get_wid_mid_map():
 
 def id_to_title_map():
     """
-        Returns a map from Wikipedia page ids to Wikipedia titles. First checks
-        if a pickle is available, if not it generates the map, serializes it,
-        and returns it.
-        
+        Returns a map from Wikipedia page ids to Wikipedia titles.         
+
         @return: Wiki page id to title map
     """
-    # TODO: complete function
+    # TODO: this needs to be fleshed out
     m = load_pkl("/shared/preprocessed/upadhya3/enwiki-datamachine/idmap/enwiki-20170520.id2t.pkl")
     return m[0]
+
+def title_to_id_map():
+    """Returns a map from Wikipedia titles to Wikipedia pageids.         
+
+    @return: Wiki page id to title map
+    """
+    # TODO: this needs to be fleshed out
+    m = load_pkl("/shared/preprocessed/upadhya3/enwiki-datamachine/idmap/enwiki-20170520.id2t.pkl")
+    return m[1]
+
+""" The three following functions are used for creating TFRecords."""
+def _int64_feature(value):
+  return tf.train.Feature(int64_list=tf.train.Int64List(value=value))
+
+def _float64_feature(value):
+  return tf.train.Feature(float_list=tf.train.FloatList(value=value))
+
+def _bytes_feature(value):
+  return tf.train.Feature(bytes_list=tf.train.BytesList(value=[value]))
+
+def write_tfrecord(documents, tfrecord_name, coherence_feature_extractor):
+    """Converts a list of documents into a tfrecord."""
+    single_raw = []
+    single_shapes = []
+    pair_raw = []
+    pair_shapes = []
+    truth = []
+
+    for doc in documents:
+        unary_fm = coherence_feature_extractor.init_unary_feature_matrix(doc)
+        single_shapes.append(unary_fm.shape)
+        single_raw.append(np.ravel(unary_fm))
+        pairwise_fm = coherence_feature_extractor.init_pairwise_feature_matrix(doc)
+        pair_shapes.append(pairwise_fm.shape) 
+        pair_raw.append(np.ravel(pairwise_fm))
+        truth.append(coherence_feature_extractor.init_gold_vector(doc))
+    
+    print(single_raw)
+    print('Writing', tfrecord_name)
+
+    with tf.python_io.TFRecordWriter(tfrecord_name) as writer:
+        for s_shp, s, p_shp, p, t in zip(single_shapes, single_raw, pair_shapes, pair_raw, truth):
+            example = tf.train.Example(
+                    features=tf.train.Features(
+                        feature={
+                            'single_shp': _int64_feature(list(s_shp)),
+                            'single': _float64_feature(s),
+                            'pair_shp': _int64_feature(list(p_shp)),
+                            'pair':   _float64_feature(p),
+                            'truth':  _int64_feature(t)
+                            })
+                        )
+            writer.write(example.SerializeToString())
+
